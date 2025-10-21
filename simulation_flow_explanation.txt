@@ -1,0 +1,36 @@
+5G NR PRS Positioning Simulation Flow
+====================================
+
+1. Configuration & Scenario Planning  
+   - `PositioningConfig` encapsulates transmitter geometry, NR numerology, PRS scheduling, solver controls, and sweep settings. The constructor validates limits (minimum anchors, PRS comb choices, memory budgets) before execution.  
+   - `main_5g_positioning` snapshots the base configuration, expands any requested SNR/UKF sweeps, and reapplies overrides per scenario while keeping logging/analysis settings in sync. Environment variables (e.g., `POSITIONING_SNR_DB`, `POSITIONING_RESULTS_FILE`) provide reproducible automation hooks.
+
+2. Environment Setup  
+   - `setupEnvironment` loads the `train_station.stl` model into `siteviewer`, applies the configured scale factor (×12), and extracts bounds for later placement. When the STL is unavailable it falls back to MATLAB’s built-in indoor scenes, matching the workflow recommended for Wireless Toolbox indoor studies.citeturn0search5
+
+3. Position & Scenario Loop  
+   - For each `(SNR, UKF)` scenario the launcher iterates over every UE sweep point and Monte Carlo trial. Receiver coordinates come from either the static setting or linear interpolation between sweep start/end points, while ensuring wall clearance. Each position is registered as an `rxsite` to support channel analysis and 3‑D visualisation.
+
+4. Transmitter Placement  
+   - Static deployments reuse the predefined 12 anchors. Otherwise, `enhancedTransmitterPlacement` analyses the receiver’s corner/edge/centre context, builds distance-priority zones, enforces minimum separation, and rejects layouts with poor GDOP before returning final coordinates. The routine also reports coverage metrics so you can inspect spatial diversity.  
+
+5. Waveform Preparation  
+   - Every transmitter receives a `txsite`, an `nrCarrierConfig`, and an `nrPRSConfig`. Resource sets stagger PRS combs, IDs, and muting to maintain orthogonality. The overall process mirrors MATLAB’s NR PRS positioning examples, but extends them with multi-cell scheduling and muting logic for indoor deployments.citeturn0search1turn0search2
+
+6. Propagation & Channel Realisation  
+   - `propagationModel("raytracing")` or cached results deliver per-anchor multipath (delay, loss, LOS flag). When ray tracing is infeasible the code falls back to log-distance loss with configurable indoor penalties.  
+   - `comm.RayTracingChannel` applies the channel impulse responses to each PRS waveform, producing time-domain signals that are subsequently summed and impaired by AWGN at the requested SNR. This mirrors the recommended flow in MATLAB’s 5G positioning channel modelling tutorials.citeturn0search8
+
+7. TDOA / PRS Processing  
+   - `tdoaUsingNrTimingEstimate` wraps `nrTimingEstimate` to obtain per-anchor TOA peaks, normalises correlation metrics, chooses a reference transmitter, and assembles relative TDOA observations along with quality scores. These metrics also drive anchor selection and logging.
+
+8. Position Solvers & Tracking  
+   - Candidate anchors are gated by correlation strength, geometry (minimum separation, GDOP thresholds), and availability masks. RANSAC prunes outliers before final solving.  
+   - Coarse solutions use weighted least squares or hyperbolic positioning. Refined estimates rely on Gauss-Newton (2-D/3-D) with trust-region damping; `lsqnonlin` can be used when the Optimization Toolbox is present. If all solver attempts fail gracefully, a correlation-weighted centroid provides a bounded fallback.  
+   - When UKF tracking is enabled, each accepted estimate updates a constant-velocity Unscented Kalman Filter, following established practice for smoothing NR PRS trajectories.citeturn0search10
+
+9. Reporting & Logging  
+   - Diagnostics (anchor sets, GDOP, residual norms, solver tags) are printed during runtime. All metrics are stored in `sweepResults` and flattened into `positioning_sweep_results.csv`, preserving UE truth, estimates, scenario metadata, correlation statistics, propagation vectors, and solver decisions for downstream analytics.
+
+10. Post-Processing Hooks  
+   - After each scenario, optional plotting hooks (CDFs, error boxes, heat maps) or external tools (e.g., `generate_positioning_plots.py`) can consume the CSV to build additional visuals. The exported structure aligns with the MATLAB example workflow for analysing PRS-based positioning accuracy, enabling rapid replication of CDF, GDOP, and anchor diagnostics.citeturn0search1turn0search2
