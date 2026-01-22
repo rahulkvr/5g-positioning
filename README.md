@@ -1,267 +1,71 @@
-# **A Comprehensive Review of 5G New Radio Positioning: From 3GPP Foundations to a High-Fidelity Simulation Framework**
+# 5G Indoor Positioning: RANSAC-UKF Tracking Pipeline
+
+Robust indoor positioning using 5G NR Positioning Reference Signals (PRS) with multipath rejection and Kalman filtering.
+
+## Results
+
+| Metric | RANSAC-only | RANSAC + UKF |
+|--------|-------------|--------------|
+| Median error | 0.67 m | 1.23 m |
+| 95th percentile | 2.41 m | **1.85 m** |
+
+**23% reduction in worst-case error** — the UKF trades slight median bias for significantly tighter tails.
+
+## Method
+
+```
+PRS Signals → TDoA Estimation → RANSAC Outlier Rejection → UKF Tracking → Position
+```
+
+1. **TDoA Estimation** — Correlate received 5G PRS with local replicas to get time-of-arrival
+2. **RANSAC** — Sample anchor triplets, reject multipath/NLOS outliers via consensus
+3. **Gauss-Newton** — Solve hyperbolic intersection on inlier set
+4. **UKF** — Constant-velocity motion prior smooths trajectory, resets on gross outliers
+
+## Simulation Setup
+
+- **Environment:** 3D ray-traced train station (STL mesh)
+- **Transmitters:** 12 gNodeBs at 3.5 GHz
+- **Bandwidth:** 100 RB PRS (30 kHz SCS)
+- **Channel:** Ray tracing with 2 reflections, 1 diffraction
+- **SNR sweep:** -10 dB to 25 dB
+- **Runs:** 1,300 Monte Carlo trials
+
+## Quick Start
+
+```matlab
+% 1. Open MATLAB in repo root
+% 2. Configure parameters in PositioningConfig.m
+% 3. Run main script
+main_5g_positioning
+```
+
+Results logged to `positioning_sweep_results.csv`. Generate plots with:
+
+```bash
+python generate_positioning_plots.py
+```
+
+## Key Files
+
+| File | Description |
+|------|-------------|
+| `main_5g_positioning.m` | Entry point, runs sweep |
+| `PositioningConfig.m` | All simulation parameters |
+| `generateEnhancedPRSWaveform.m` | 5G NR PRS signal generation |
+| `analyze_positioning_results.py` | Post-processing & plots |
+
+## Tech Stack
+
+`MATLAB` `5G Toolbox` `Ray Tracing` `RANSAC` `Unscented Kalman Filter` `Python` `Plotly`
+
+## References
+
+- 3GPP TS 38.211 — NR Physical channels and modulation
+- 3GPP TR 38.855 — Study on NR positioning support
+- Fischler & Bolles (1981) — RANSAC
+- Julier & Uhlmann (2004) — Unscented filtering
 
 ---
 
-## **Abstract**
-
-This document provides a comprehensive theoretical review of 5G New Radio (NR) positioning, tracing its evolution, detailing its current technological foundations, and exploring its future trajectory. It serves as an extensive academic treatise on the subject, establishing the imperative for high-accuracy terrestrial positioning by examining the fundamental limitations of Global Navigation Satellite Systems (GNSS) and tracing the evolution of cellular positioning from 2G to 5G. The core of this review is a deep dive into the multi-faceted positioning framework introduced by 3GPP, including the primary methods (TDOA, AoA, RTT), the enabling signal structures (PRS, SRS), and the supporting network architecture (LMF, GMLC).
-
-Furthermore, this review explores the advanced algorithms essential for achieving high accuracy, such as Bayesian filters and machine learning techniques for Non-Line-of-Sight (NLOS) mitigation. We chart the progress across 3GPP Releases 16, 17, and 18, and look ahead to the future of 6G and Integrated Sensing and Communication (ISAC). 
-
-As a practical case study, this document also introduces a specific high-fidelity MATLAB-based simulation framework that implements many of these theoretical concepts. We discuss its architecture, workflow, and key features, such as its physics-based ray-tracing channel model and geometry-aware transmitter placement algorithm. Finally, we present and analyze sample performance results from this simulator, demonstrating its capability to achieve sub-meter positioning accuracy in complex indoor environments and validating its role as a powerful tool for research and development in 5G positioning. This work synthesizes information from over 50 academic, industry, and standardization sources to provide a definitive and exhaustive reference for researchers and engineers.
-
----
-
-## **Simulation Quick Start**
-
-1. Launch MATLAB in the repository root and open `main_5g_positioning.m`.
-2. Adjust `PositioningConfig` as needed:
-   - `positionSweep` controls how many UE locations and Monte Carlo iterations are evaluated.
-   - `snrSweep.enable` toggles multi-scenario runs; edit `snrSweep.values` and `snrSweep.ukfModes` to explore different SNRs and UKF settings.
-   - `resultLogging.enable` writes every trial to `positioning_sweep_results.csv`.
-3. Run `main_5g_positioning.m`. When a sweep is active the launcher iterates over each `(SNR, UKF)` pair, re-entering the script with environment overrides so every scenario remains reproducible.
-4. Monitor the command window for per-step diagnostics (environment setup, ray tracing, solver status) and estimated runtimes—each UE position typically requires ~10 minutes on the reference workstation.
-
-## **Scenario Sweeps and Logging**
-
-- Environment variables can override configuration at runtime: `POSITIONING_SNR_DB`, `POSITIONING_UKF_ENABLE`, `POSITIONING_RESULTS_FILE`, and `POSITIONING_SCENARIO_TAG` are set automatically during sweeps but can also be supplied manually for scripted studies.
-- Result logging honours the `overwrite` flag on first write and appends thereafter. Each trial stores UE truth, estimates, error metrics, anchor selections, propagation loss/delay vectors, residual statistics, solver tags, and the transmitter layout.
-- The flattened CSV generated by `flattenSweepResultsTable` aligns with the flow described in `simulation_flow_explanation.txt`, enabling quick analysis in MATLAB, Python, or BI tools (CDFs, SNR comparisons, solver diagnostics, heat maps, etc.).
-
----
-
-## **1.0 Introduction**
-
-The fifth generation of wireless technology (5G) represents a paradigm shift from a pure communication-centric network to a unified platform integrating sensing and communication. Among the most anticipated new services is high-accuracy, low-latency positioning, which is a critical enabler for Industry 4.0, autonomous systems, asset tracking, and augmented reality. A comprehensive survey of indoor positioning technologies can be found in [14].
-
-### **1.1 The Imperative for Ubiquitous, High-Accuracy Positioning**
-
-The digital transformation of society and industry has created an insatiable demand for context-aware services. The ability to know the precise location of a person, device, or asset in real-time is no longer a niche requirement but a foundational component of emerging ecosystems. Use cases outlined by 3GPP in TR 22.872 [23] and other industry analyses highlight the breadth of this demand:
-
-- **Industrial IoT (IIoT) and Smart Factories:** For applications like automated guided vehicles (AGVs), robotic arm coordination, and asset tracking on a factory floor, positioning accuracies at the sub-meter, and often centimeter, level are required to ensure safety and efficiency [29].
-- **Autonomous Vehicles and V2X:** Autonomous driving requires continuous, lane-level positioning with extremely high reliability and integrity, which cannot be met by GNSS alone in urban canyons [24], [30].
-- **Public Safety and Emergency Services:** Enhanced emergency location services, particularly indoors where GNSS fails, can significantly improve response times and outcomes [49].
-- **Augmented/Virtual Reality:** Location-aware AR/VR demands accurate and low-latency positioning to ensure a seamless user experience [15].
-- **Logistics and Asset Tracking:** Warehouses and logistics hubs, often indoors or underground, rely on high-accuracy positioning to manage inventory and streamline operations [16].
-
-### **1.2 Evolution from GNSS to 5G Positioning**
-
-GNSS, while ubiquitous, suffers from significant limitations that restrict its utility in dense urban, indoor, and underground environments. Multipath, signal attenuation, and lack of line-of-sight (LOS) hinder GNSS performance, and integrating GNSS with cellular positioning has emerged as a solution [47]. The evolution from 2G to 5G saw a progression of positioning techniques:
-
-- **2G/3G Era:** Techniques like Cell ID, Enhanced Observed Time Difference (E-OTD), and A-GPS marked initial attempts to combine cellular infrastructure with satellite positioning [47].
-- **4G (LTE):** Observed Time Difference of Arrival (OTDOA) and uplink-time difference of arrival (UTDOA) brought improved accuracy, but the network synchronization and multipath challenges limited widespread adoption [15].
-- **5G NR:** With massive MIMO, beamforming, dense deployment, and dedicated positioning signals (PRS), 5G introduces a step change in positioning capabilities. NR also integrates the Location Management Function (LMF), enabling network-based positioning with high precision [15], [34].
-
-### **1.3 Scope of This Review**
-
-This document seeks to synthesize the current state of 5G NR positioning while contextualizing historical developments and future trajectories. We focus on:
-
-- Fundamentals of positioning in cellular networks.
-- 5G NR-specific architectures and signals (PRS, SRS, CSI-RS).
-- Positioning methods (OTDOA, TDOA, AoA, RTT, sensor fusion).
-- Implementation and simulation techniques with ray tracing.
-- Research directions in 3GPP and academia.
-
----
-
-## **2.0 Fundamentals of Positioning in Cellular Networks**
-
-### **2.1 Basic Concepts**
-
-- **Time-of-Arrival (TOA) and TDOA:** Measuring signal arrival time differences to infer distance.
-- **Angle-of-Arrival (AoA):** Using advanced antenna arrays to estimate the direction of incoming signals.
-- **Round-Trip Time (RTT):** Estimating distance by measuring the time taken for a signal to travel to a device and back.
-- **Signal Strength (RSSI):** Using power measurements as a rough estimate of distance.
-
-Each method has trade-offs in terms of accuracy, infrastructure requirements, and susceptibility to multipath and NLOS errors [22], [27].
-
-### **2.2 Architecture of Cellular Positioning**
-
-The cellular positioning system involves network entities such as:
-
-- **Location Management Function (LMF):** Core entity in 5G that controls positioning sessions [36].
-- **Evolved Serving Mobile Location Centre (E-SMLC):** The LTE counterpart, replaced by LMF in 5G [37].
-- **Global Navigation Satellite System (GNSS):** Often integrated into the UE for hybrid positioning.
-
-Positioning sessions can be initiated by the network (MO-LR) or the device (MT-LR) with different privacy and QoS requirements [24].
-
----
-
-## **3.0 Positioning Reference Signals in 5G NR**
-
-### **3.1 Downlink Positioning Signals**
-
-- **PRACH:** Primarily used for uplink RTT estimation during random access procedures [32].
-- **SRS:** Uplink sounding reference signals for UL-based positioning methods [40].
-- **PRS:** Downlink signal dedicated to positioning, with flexible configurations for muting, frequency diversity, and time distribution [1].
-- **CSI-RS:** Can be used for positioning by measuring channel state information, though primarily designed for channel estimation [1], [9].
-
-### **3.2 PRS Design in 5G NR**
-
-PRS configuration offers flexibility in:
-
-- **Time Domain:** Number of OFDM symbols and periodicity.
-- **Frequency Domain:** Resource block allocation and hopping.
-- **Muting Patterns:** To avoid interference among neighbor cells.
-- **Comb Size:** Defines frequency spacing of PRS tones for different deployment scenarios [1].
-
-The PRS sequence is a Zadoff-Chu (ZC) sequence designed for good autocorrelation properties [1].
-
-### **3.3 Sidelink Positioning**
-
-Rel-17 introduced sidelink positioning to support V2X use cases, enabling vehicles to directly measure relative positioning by exchanging PRS-like signals [46].
-
----
-
-## **4.0 Positioning in 5G NR: Methods and Performance**
-
-### **4.1 Observed Time Difference of Arrival (OTDOA)**
-
-OTDOA forms the basis of downlink positioning by measuring the time difference between PRS arrivals from multiple gNBs. The LMF aggregates TOA measurements and derives the UE position via multilateration [15].
-
-### **4.2 Uplink Time Difference of Arrival (UTDOA)**
-
-UTDOA relies on SRS transmissions from the UE. The network measures arrival time at multiple gNBs [15].
-
-### **4.3 Angle of Arrival (AoA)**
-
-With massive MIMO and beamforming, AoA estimations from CSI-RS are becoming increasingly feasible [34].
-
-### **4.4 Round Trip Time (RTT)**
-
-RTT positioning can be used for lower accuracy applications but suffers from the requirement that the UE must participate actively [31].
-
-### **4.5 Sensor Fusion and Hybrid Methods**
-
-Hybrid approaches combine GNSS, Wi-Fi, Bluetooth, and inertial sensors with cellular measurements. Sensor fusion using Kalman filters and particle filters is common [39], [43].
-
-### **4.6 Performance Expectations**
-
-3GPP Release 16 targets sub-meter accuracy in indoor environments with properly deployed infrastructure. Field trials have demonstrated accuracy ranges between 0.5 and 3 meters in typical indoor and urban micro deployments [15].
-
----
-
-## **5.0 Simulation Framework Architecture**
-
-The provided MATLAB-based simulator is designed for high-fidelity evaluation of 5G NR positioning accuracy in large indoor venues.
-
-### **5.1 Geometry and Transmitter Placement**
-
-`setupEnvironment` loads a 3D model (train station) into `siteviewer`. `enhancedTransmitterPlacement` distributes transmitters along the hall based on distance zones, height constraints, and GDOP objectives [21], [26].
-
-### **5.2 PRS Waveform Generation**
-
-`generateEnhancedPRSWaveform` orchestrates NR PRS lattice creation and OFDM modulation, leveraging MATLAB's `nrCarrierConfig` and `nrPRSConfig` objects. Muting patterns and comb sizes can be varied for performance analysis [1], [2].
-
-### **5.3 Ray-Tracing Channel**
-
-`comm.RayTracingChannel` computes multipath components considering material properties and reflections. The simulator caches ray-trace results for repeated runs, reflecting the methods described in MATLAB's indoor positioning tutorials [3], [7].
-
-### **5.4 TDOA Estimation and Position Solving**
-
-`tdoaUsingNrTimingEstimate` obtains TOA metrics using correlation with the reference PRS (based on `nrTimingEstimate`). The solver (`solveTDOA2D_GN`, `solveTDOA3D_Robust`, `solveTDOAHybrid`) selects anchor subsets with good geometry, applies regularized Gauss-Newton or Levenberg-Marquardt optimization, and validates GDOP thresholds before finalizing the estimate.
-
-### **5.5 Filter-Based Tracking**
-
-The simulator optionally employs an Unscented Kalman Filter (UKF) to smooth estimates across position samples, offering improved robustness against outliers [39].
-
-### **5.6 Logging and Diagnostics**
-
-Every simulation iteration records detailed metadata (anchor selection, RANSAC inliers, residuals, GDOP, centroid fallback indicators) to facilitate offline analysis.
-
----
-
-## **6.0 Case Study: Train Station Deployment**
-
-### **6.1 Deployment Overview**
-
-- **Environment:** Train station hall, 3D STL model scaled to realistic dimensions.
-- **Transmitters:** 12 gNBs placed on pillars and ceilings to maximize coverage.
-- **UE Sweep:** 5 horizontal positions along the passenger walkway with 2 samples per position.
-- **SNR Scenarios:** 5 dB and 25 dB with UKF toggled off/on.
-
-### **6.2 Sample Results**
-
-The simulator achieves horizontal errors ranging from 0.4 m to 2.9 m in LOS-dominant positions, with UKF smoothing reducing tail errors from ~8 m to ~5 m in NLOS conditions. The CSV results include `MaxCorrSeries`, `AvailableMask`, and `TDOAMeters`, enabling correlation of error spikes to specific anchor visibility.
-
-### **6.3 Visualization**
-
-`generate_positioning_plots.py` consumes the CSV log to produce:
-
-- Empirical CDFs of horizontal error by scenario.
-- Mean and 95th percentile error vs. SNR plots, separately for UKF on/off.
-- Violin plots highlighting per-position error distributions.
-- Path loss vs. error scatter plots, showing correlation between signal conditions and positioning accuracy.
-- 3D point cloud visualization overlaying true and estimated UE positions in the scaled train station environment.
-
----
-
-## **7.0 Discussion: Future Directions and Open Research**
-
-- **Integrated Sensing and Communications (ISAC):** Combining positioning with radar-like sensing, particularly in mmWave and THz bands [18].
-- **Reconfigurable Intelligent Surfaces (RIS):** Enhancing LOS availability and shaping multipath to improve positioning accuracy [19].
-- **Sidelink Positioning:** Expanding vehicle-to-everything (V2X) capabilities in 5G Advanced [20], [46].
-- **Machine Learning for NLOS Mitigation:** Applying deep learning to detect and correct NLOS bias [44].
-- **Privacy and Security:** Ensuring secure and privacy-preserving positioning services [50].
-
----
-
-## **8.0 Conclusion**
-
-5G NR represents a significant step forward in cellular positioning, offering high flexibility, improved accuracy, and the ability to integrate with a wide range of applications. The MATLAB-based simulation framework provided in this repository demonstrates how these concepts can be implemented in practice and evaluated in high-fidelity indoor scenarios. Researchers and engineers can use this tool to explore new algorithms, test deployment strategies, and gain deeper insights into the complex interplay between radio propagation, signal design, and positioning accuracy.
-
----
-
-## **References**
-
-[1] MathWorks, “NR Positioning Reference Signal,” https://www.mathworks.com/help/5g/ug/nr-positioning-reference-signal.html.  
-[2] MathWorks, “NR Positioning Using PRS,” https://www.mathworks.com/help/5g/ug/nr-positioning-using-prs.html.  
-[3] MathWorks, “Indoor MIMO-OFDM Communication Link Using Ray Tracing,” https://www.mathworks.com/help/wireless-testbench/ug/indoor-mimo-ofdm-communication-link-using-ray-tracing.html.  
-[4] MathWorks, “Ray Tracing for Wireless Communications,” https://www.mathworks.com/videos/ray-tracing-for-wireless-communications-1574182131886.html.  
-[5] MathWorks, “NR Positioning Accuracy Evaluation,” https://www.mathworks.com/help/5g/ug/nr-positioning-accuracy-evaluation.html.  
-[6] MathWorks, “nrPRSIndices,” https://www.mathworks.com/help/5g/ref/nrprsindices.html.  
-[7] MathWorks, “comm.RayTracingChannel,” https://www.mathworks.com/help/wireless-testbench/ref/comm.raytracingchannel-system-object.html.  
-[8] MathWorks, “nrTimingEstimate,” https://www.mathworks.com/help/5g/ref/nrtimingestimate.html.  
-[9] MathWorks, “Downlink NR Physical Channels and Signals,” https://www.mathworks.com/help/5g/gs/downlink-nr-physical-channels-and-signals.html.  
-[10] MathWorks, “NR PRS Positioning Performance,” https://www.mathworks.com/help/5g/ug/nr-prs-positioning-performance.html.  
-[11] 3GPP, TS 38.305, “NG-RAN; User Equipment (UE) positioning in NG-RAN; Stage 2,” V17.0.0, 2022.  
-[12] 3GPP, TS 38.214, “NR; Physical layer procedures for data.”  
-[13] 3GPP, TS 38.211, “NR; Physical channels and modulation.”  
-[14] M. Youssef and A. Agrawala, “The Horus WLAN location determination system,” in Proc. MobiSys, 2005.  
-[15] 3GPP, TR 38.857, “Study on NR positioning enhancements for Release 17,” 2021.  
-[16] Ericsson, “5G-Advanced: Evolution towards 6G,” White Paper, 2022.  
-[17] Qualcomm, “What is 5G-Advanced?” https://www.qualcomm.com/news/onq/2022/03/what-is-5g-advanced.  
-[18] F. Liu et al., “Integrated Sensing and Communications: Towards Dual-Functional Wireless Networks for 6G and Beyond,” IEEE J. Sel. Areas Commun., vol. 40, no. 6, pp. 1728–1767, Jun. 2022.  
-[19] M. Di Renzo et al., “Reconfigurable Intelligent Surfaces for Wireless Communications: Overview of Hardware Designs, Channel Models, and Estimation Techniques,” IEEE Open J. Commun. Soc., vol. 1, pp. 732–768, 2020.  
-[20] 3GPP, RP-213588, “New WID on NR Sidelink Positioning,” 2021.  
-[21] I. Guvenc and C. C. Chong, “A Survey on TOA Based Wireless Localization and NLOS Mitigation Techniques,” IEEE Commun. Surveys Tutorials, vol. 11, no. 3, pp. 107–124, Third Quarter 2009.  
-[22] S. S. Ghassemzadeh, “Multipath and NLOS in Wireless Positioning,” in Positioning and Navigation in Complex Environments, IntechOpen, 2021.  
-[23] 3GPP, TR 22.872, “Study on positioning use cases,” V16.1.0, 2018.  
-[24] 3GPP, TS 23.273, “5G System (5GS) Location Services (LCS); Stage 2,” V17.4.0, 2022.  
-[25] 3GPP, TS 37.355, “LTE Positioning Protocol (LPP).”  
-[26] D. B. Jourdan and N. Roy, “Optimal sensor placement for agent localization,” in Proc. IEEE ICRA, 2008.  
-[27] A. F. Molisch, Wireless Communications, 2nd ed., Wiley-IEEE Press, 2010.  
-[28] S. M. Kay, Fundamentals of Statistical Signal Processing, Vol. I: Estimation Theory, Prentice Hall, 1993.  
-[29] Nokia, “5G for industry: Unlocking the potential of Industry 4.0,” White Paper, 2020.  
-[30] 5GAA, “C-V2X Use Cases: A Guide to 5G V2X Deployment,” White Paper, 2021.  
-[31] T. S. Rappaport et al., “Millimeter Wave Mobile Communications for 5G Cellular: It Will Work!” IEEE Access, vol. 1, pp. 335–349, 2013.  
-[32] J. H. Reed, An Introduction to Ultra Wideband Communication Systems, Prentice Hall, 2005.  
-[33] 3GPP, TS 36.211, “Evolved Universal Terrestrial Radio Access (E-UTRA); Physical channels and modulation.”  
-[34] B. H. Kim, H. J. Kim, and S. H. Kim, “A Survey on Wi-Fi Based Indoor Positioning System,” J. Korea Inst. Inf. Commun. Eng., vol. 20, no. 5, pp. 989–1000, 2016.  
-[35] Rohde & Schwarz, “5G NR network architecture and protocols,” https://www.rohde-schwarz.com/us/solutions/test-and-measurement/wireless-communication/5g-nr/5g-nr-network-architecture-and-protocols_230737.html.  
-[36] 3GPP, TS 38.305, “NG-RAN; User Equipment (UE) positioning in NG-RAN; Stage 2,” V17.0.0, 2022.  
-[37] 3GPP, TS 37.355, “LTE Positioning Protocol (LPP).”  
-[38] Ericsson, “NR-RedCap (Reduced Capability) – new IoT device category in 5G,” Ericsson Technology Review, 2022.  
-[39] F. Gustafsson, Statistical Sensor Fusion, Studentlitteratur, 2012.  
-[40] 3GPP, TS 38.214, “NR; Physical layer procedures for data.”  
-[41] Keysight Technologies, “5G Beam Management,” Application Note, 2021.  
-[42] G. Welch and G. Bishop, “An Introduction to the Kalman Filter,” UNC-Chapel Hill, TR 95-041, 2006.  
-[43] M. S. Arulampalam et al., “A tutorial on particle filters for online nonlinear/non-Gaussian Bayesian tracking,” IEEE Trans. Signal Process., vol. 50, no. 2, pp. 174–188, Feb. 2002.  
-[44] T. O'Shea and J. Hoydis, “An Introduction to Deep Learning for the Physical Layer,” IEEE Trans. Cognitive Commun. Netw., vol. 3, no. 4, pp. 563–575, Dec. 2017.  
-[45] 3GPP, RP-182875, “New WID on NR Positioning Support,” 2018.  
-[46] 3GPP, RP-212797, “New WID on NR positioning enhancements for Rel-18,” 2021.  
-[47] B. Hofmann-Wellenhof, H. Lichtenegger, and J. Collins, Global Positioning System: Theory and Practice, Springer, 2001.  
-[48] O-RAN Alliance, “O-RAN Architecture Description,” O-RAN.WG1.O-RAN-Architecture-Description, 2021.  
-[49] ETSI, TS 103 625, “Advanced Mobile Location (AML) for emergency communication.”  
-[50] S. M. Ali, M. A. A. El-Moursy, and H. H. El-Kassas, “A Survey on Security and Privacy Issues in 5G Communication Systems,” J. Network Comput. Appl., vol. 162, p. 102658, 2020.  
-[51] M. Z. Chowdhury et al., “A Survey on 6G Wireless Systems: Vision, Requirements, Technologies, and Challenges,” IEEE Open J. Commun. Soc., vol. 1, pp. 957–976, 2020.
+*Research project @ TU Hamburg, Institut für Hochfrequenztechnik*
